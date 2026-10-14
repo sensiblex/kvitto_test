@@ -55,3 +55,12 @@
 - Verified remainder distribution to the first installments, invalid installment periods and negative amounts, and schedule/method consistency.
 - Tested valid and invalid status transitions through the pure status-validation functions.
 - Ran the full test suite: `pytest -v` — 42 tests passed.
+
+## Stage 7 — Pydantic schemas
+
+- Expanded `app/schemas.py` with `PaymentCreate`, `PaymentResponse`, and `BankWebhook`, keeping the existing `TariffResponse` unchanged.
+- `PaymentCreate` validates payment methods, installment periods (3/6/12), and the method/period relationship. Pydantic validation errors integrate with FastAPI's standard HTTP 422 handling when used by a route.
+- Extracted `validate_promo_code` into the payment service and reused it for both discount calculation and Pydantic input validation; promo matching remains case-insensitive and accepts only `KVITTO10`.
+- `PaymentResponse` enables ORM attribute validation and parses the stored JSON schedule text into the API's `list[int] | None` contract. `BankWebhook` restricts status values to the supported payment statuses; transition validity remains business logic.
+- Added schema tests for accepted/rejected method-period combinations, promo validation, webhook statuses, ORM response serialization, and nullable schedules. Added unit coverage for the shared promo validator.
+- Ran `pytest -q` — 75 tests passed.

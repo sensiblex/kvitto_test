@@ -11,6 +11,7 @@ from app.services.payments import (
     calculate_installment_schedule,
     calculate_payment_amount,
     can_transition_status,
+    validate_promo_code,
     validate_status_transition,
 )
 
@@ -33,6 +34,17 @@ def test_calculate_payment_amount(price, promo_code, expected):
 def test_invalid_promo_code_raises(promo_code):
     with pytest.raises(InvalidPromoCodeError):
         calculate_discount(1_990_000, promo_code)
+
+
+@pytest.mark.parametrize("promo_code", [None, "KVITTO10", "kvitto10"])
+def test_validate_promo_code_accepts_supported_values(promo_code):
+    assert validate_promo_code(promo_code) is None
+
+
+@pytest.mark.parametrize("promo_code", ["UNKNOWN", ""])
+def test_validate_promo_code_rejects_unknown_values(promo_code):
+    with pytest.raises(InvalidPromoCodeError):
+        validate_promo_code(promo_code)
 
 
 @pytest.mark.parametrize(

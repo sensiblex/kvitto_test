@@ -44,12 +44,15 @@ class InvalidStatusTransitionError(PaymentLogicError):
     """Raised when a payment status transition is not allowed."""
 
 
+def validate_promo_code(promo_code: str | None) -> None:
+    if promo_code is not None and promo_code.strip().upper() != PROMO_CODE:
+        raise InvalidPromoCodeError(f"Unknown promo code: {promo_code!r}")
+
+
 def calculate_discount(price: int, promo_code: str | None = None) -> int:
+    validate_promo_code(promo_code)
     if promo_code is None:
         return 0
-
-    if promo_code.strip().upper() != PROMO_CODE:
-        raise InvalidPromoCodeError(f"Unknown promo code: {promo_code!r}")
 
     return (price * PROMO_DISCOUNT_PERCENT) // 100
 
