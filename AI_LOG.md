@@ -19,3 +19,9 @@
 - `schedule` is stored as `Text` (JSON-serialized list); `null` for non-installment payments.
 - Updated `app/main.py`: added `lifespan` context manager that calls `Base.metadata.create_all(bind=engine)` at startup.
 - Synchronous SQLAlchemy chosen over async — simpler, no extra dependencies, sufficient for SQLite.
+
+## Stage 3 — Tariff initialization
+
+- The application seeds the required `basic`, `standard`, and `premium` tariffs at startup with prices stored as integer kopecks.
+- Initialization checks existing tariff titles before inserting, so restarting the application does not create duplicates.
+- Added isolated startup tests for the expected tariff values and repeated initialization.
