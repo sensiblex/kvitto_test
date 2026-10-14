@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base, SessionLocal, engine
 from app.models import Payment, Tariff  # noqa: F401 — register models with Base
+from app.routers.tariffs import router as tariffs_router
 
 
 REQUIRED_TARIFFS = (
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Kvitto Payment API", lifespan=lifespan)
+app.include_router(tariffs_router)
 
 
 @app.get("/")

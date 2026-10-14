@@ -25,3 +25,13 @@
 - The application seeds the required `basic`, `standard`, and `premium` tariffs at startup with prices stored as integer kopecks.
 - Initialization checks existing tariff titles before inserting, so restarting the application does not create duplicates.
 - Added isolated startup tests for the expected tariff values and repeated initialization.
+
+## Stage 4 — GET /tariffs
+
+- Created `app/schemas.py` with `TariffResponse` Pydantic v2 model: `id`, `title`, `price` (integer kopecks), `from_attributes=True` for ORM serialization.
+- Created `app/routers/` package; endpoint placed in `app/routers/tariffs.py` on an `APIRouter(tags=["tariffs"])` instead of `main.py` — keeps route handlers thin and leaves room for the upcoming payments/webhooks routers.
+- `GET /tariffs` queries `Tariff` via `Depends(get_db)`, ordered by `id` so the response is deterministic and matches the seed order (basic, standard, premium).
+- `response_model=list[TariffResponse]` enforces exactly `{id, title, price}` — extra ORM attributes can't leak into the response.
+- Registered the router in `app/main.py` via `app.include_router(tariffs_router)`.
+- Updated the `isolated_database` fixture to also override `app.dependency_overrides[get_db]` — endpoint sessions now use the same in-memory test database as the lifespan seeding (monkeypatched `main.SessionLocal`). The override mirrors `get_db` (yields session, closes in `finally`).
+- Added `test_get_tariffs_returns_all_tariffs_in_kopecks`: asserts HTTP 200, exactly 3 tariffs in seed order, kopeck prices as ints, and each item validates against `TariffResponse` with exactly the keys `{id, title, price}`.
