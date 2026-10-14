@@ -168,6 +168,31 @@ def test_get_payment_returns_404_for_unknown_id(client):
     assert response.json() == {"detail": "Payment not found"}
 
 
+def test_create_payment_rejects_boolean_tariff_id(client, isolated_database):
+    response = client.post("/payments", json=payment_payload(True))
+
+    assert response.status_code == 422
+    with isolated_database() as db:
+        assert db.scalars(select(Payment)).all() == []
+
+
+def test_create_payment_rejects_float_installment_months(client, isolated_database):
+    tariff_id = get_standard_tariff_id(client)
+
+    response = client.post(
+        "/payments",
+        json=payment_payload(
+            tariff_id,
+            method="installment",
+            installment_months=3.0,
+        ),
+    )
+
+    assert response.status_code == 422
+    with isolated_database() as db:
+        assert db.scalars(select(Payment)).all() == []
+
+
 def test_repeated_idempotency_key_returns_existing_payment(client, isolated_database):
     tariff_id = get_standard_tariff_id(client)
     payload = payment_payload(tariff_id)
@@ -367,6 +392,15 @@ def test_bank_webhook_returns_404_for_unknown_payment(client):
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Payment not found"}
+
+
+def test_bank_webhook_rejects_boolean_payment_id(client):
+    payment_id = create_payment(client)
+
+    response = post_signed_webhook(client, {"payment_id": True, "status": "succeeded"})
+
+    assert response.status_code == 422
+    assert client.get(f"/payments/{payment_id}").json()["status"] == "pending"
 
 
 def create_payment_with_email(client, email):

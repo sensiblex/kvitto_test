@@ -1,9 +1,14 @@
 import json
 from datetime import datetime, timezone
-from typing import Literal
 
 from email_validator import validate_email
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from app.services.payments import PaymentMethod, PaymentStatus, validate_promo_code
 
@@ -17,11 +22,18 @@ class TariffResponse(BaseModel):
 
 
 class PaymentCreate(BaseModel):
-    tariff_id: int
+    tariff_id: StrictInt
     email: str
     method: PaymentMethod
-    installment_months: Literal[3, 6, 12] | None = None
+    installment_months: StrictInt | None = None
     promo_code: str | None = None
+
+    @field_validator("installment_months")
+    @classmethod
+    def validate_installment_period(cls, value: int | None) -> int | None:
+        if value is not None and value not in (3, 6, 12):
+            raise ValueError("installment_months must be 3, 6, or 12")
+        return value
 
     @field_validator("email")
     @classmethod
@@ -79,5 +91,5 @@ class PaymentResponse(BaseModel):
 
 
 class BankWebhook(BaseModel):
-    payment_id: int
+    payment_id: StrictInt
     status: PaymentStatus
