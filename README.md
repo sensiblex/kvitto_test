@@ -1,176 +1,124 @@
-# Kvitto Payment API
+# API платежей
+## Запуск через Docker
 
-[![CI](https://github.com/sensiblex/kvitto_test/actions/workflows/ci.yml/badge.svg)](https://github.com/sensiblex/kvitto_test/actions/workflows/ci.yml)
-
-Test assignment: a small payment API for an online school built with FastAPI.
-
-## Requirements
-
-- Python 3.11+ (for local run), or
-- Docker + Docker Compose
-
-## Configure the webhook secret
-
-`WEBHOOK_SECRET` is required by both Docker Compose and the local app. Generate a
-random value and keep it private.
-
-Bash:
-
-```bash
-export WEBHOOK_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
-```
-
-PowerShell:
+Требуется Docker с Docker Compose. Из корня проекта выполните:
 
 ```powershell
-$env:WEBHOOK_SECRET = python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-Command Prompt (`cmd.exe`): generate a value with the Python command above, then
-set it for the current terminal:
-
-```bat
-set "WEBHOOK_SECRET=paste-generated-value-here"
-```
-
-## Run with Docker (recommended)
-
-After setting `WEBHOOK_SECRET` in the current shell:
-
-```bash
 docker compose up --build
 ```
 
-The API is available at http://localhost:8000.
+API будет доступен по адресу `http://localhost:8000`, документация — `http://localhost:8000/docs`. Compose автоматически задаёт тестовое значение `WEBHOOK_SECRET`; отдельно настраивать его для учебного запуска не нужно.
 
-- The SQLite database is stored in the named volume `kvitto_data`
-  (`/data/kvitto.db` inside the container), so data survives container
-  restarts. To remove it, run `docker compose down -v`.
-- The container runs `alembic upgrade head` before starting uvicorn, so the
-  schema is always up to date.
-- `DATABASE_URL` points the app at the database file inside the volume.
-  Locally (without Docker) it defaults to `sqlite:///./kvitto.db`.
-- Compose refuses to start unless `WEBHOOK_SECRET` is set; it does not use a
-  public fallback secret.
+## Локальный запуск без Docker
 
-## Run locally
+Требуется Python 3.11 или новее. Из корня проекта выполните команды в PowerShell:
 
-```bash
-pip install -r requirements.txt
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Локально используется SQLite-файл `kvitto.db` в корне проекта. Перед запуском приложения нужно создать таблицы и выполнить миграции:
+
+```powershell
 alembic upgrade head
-uvicorn app.main:app --reload
 ```
 
-Set `WEBHOOK_SECRET` in the same shell before starting the app, using the
-platform-specific command above.
+Для обычного запуска `WEBHOOK_SECRET` не нужен; он требуется только при вызове вебхука. Если будете тестировать вебхук, задайте секрет в этой же сессии PowerShell до запуска приложения:
 
-## Database migrations
-
-The schema is managed by Alembic — the application does not create tables
-itself, so `alembic upgrade head` must run before startup (the Docker image
-does this automatically).
-
-```bash
-alembic upgrade head                          # apply migrations
-alembic revision --autogenerate -m "..."      # generate a new migration
+```powershell
+$env:WEBHOOK_SECRET = "local-development-secret"
 ```
 
-Alembic reads `DATABASE_URL` just like the app, so migrations apply to the
-same database the app uses.
+Запустите приложение:
 
-## Webhook signature
-
-`POST /webhooks/bank` requires the `X-Signature` header — hex HMAC-SHA256 of the raw request body, keyed with `WEBHOOK_SECRET`. Missing or invalid signature → HTTP 401.
-
-Python:
-
-```python
-import hashlib
-import hmac
-import json
-import os
-
-body = json.dumps({"payment_id": 1, "status": "succeeded"}).encode()
-signature = hmac.new(
-    os.environ["WEBHOOK_SECRET"].encode(), body, hashlib.sha256
-).hexdigest()
-# send header: X-Signature: <signature>
+```powershell
+python -m uvicorn app.main:app --reload
 ```
 
-curl:
+При старте приложения добавляются необходимые тарифы.
 
-```bash
-BODY='{"payment_id": 1, "status": "succeeded"}'
-SIGNATURE=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
-curl -X POST http://localhost:8000/webhooks/bank \
-  -H "Content-Type: application/json" \
-  -H "X-Signature: $SIGNATURE" \
-  -d "$BODY"
+## Тесты
+### Локально
+
+Из корня проекта установите зависимости для разработки и запустите тесты:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
 
-## Verify
+### В Docker
 
-- `GET http://localhost:8000/` → `{"status": "ok"}`
-- Swagger UI: http://localhost:8000/docs
+Если приложение уже запущено через `docker compose up`, выполните тесты в его контейнере:
 
-## API
+```powershell
+docker compose exec app python -m pytest
+```
 
-- `GET /tariffs` — list available tariffs.
-- `POST /payments` — create a payment (supports the `Idempotency-Key` header).
-  An empty key or invalid email returns 422; omit the header to create payments
-  without a key. Payment `created_at` is returned with a UTC timezone indicator.
-- `GET /payments` — list payments, ordered by `id` ascending. Optional query
-  filters `email` and `status` combine with AND; without filters all payments
-  are returned. `status` accepts `pending`, `succeeded`, `failed`, `refunded`
-  (other values return 422). `email` matches the stored value exactly,
-  including letter case — emails are saved as provided at creation, so
-  `Alice@example.com` and `alice@example.com` are different values.
-- `GET /payments/{id}` — get a payment by ID.
-- `POST /webhooks/bank` — bank payment status updates.
+Если контейнер не запущен, Compose создаст временный контейнер для тестов и удалит его после завершения:
 
-## Request examples
+```powershell
+docker compose run --rm app python -m pytest
+```
 
-Bash:
+## Основные эндпоинты
+
+- `GET /tariffs` — список тарифов.
+- `POST /payments` — создание платежа. Укажите `tariff_id`, `email` и `method` (`card`, `sbp` или `installment`); для рассрочки также нужны `installment_months` (`3`, `6` или `12`). `promo_code` необязателен; `KVITTO10` дает скидку 10% без учета регистра. Неизвестный промокод отклоняется с HTTP 422. Повторный `Idempotency-Key` возвращает существующий платёж.
+- `GET /payments/{id}` — получение платежа по идентификатору.
+- `POST /webhooks/bank` — обновление статуса платежа; допустимые переходы: `pending → succeeded`, `pending → failed`, `succeeded → refunded`. Запрос должен содержать заголовок `X-Signature` с HMAC-SHA256 подписью тела.
+
+Цены тарифов и суммы платежей указаны в копейках целым числом.
+
+## Примеры запросов
+
+Получить тарифы:
 
 ```bash
 curl http://localhost:8000/tariffs
-
-curl -X POST http://localhost:8000/payments \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: example-order-1' \
-  -d '{"tariff_id": 2, "email": "student@example.com", "method": "card"}'
 ```
 
-PowerShell:
-
-```powershell
-curl.exe http://localhost:8000/tariffs
-
-curl.exe -X POST http://localhost:8000/payments `
-  -H "Content-Type: application/json" `
-  -H "Idempotency-Key: example-order-1" `
-  --data-raw '{"tariff_id": 2, "email": "student@example.com", "method": "card"}'
-```
-
-## Checks
-
-Install the development dependencies and run the same checks used in CI:
+Создать платёж банковской картой:
 
 ```bash
-pip install -r requirements-dev.txt
-ruff check .
-ruff format --check .
-coverage run --branch --source=app -m pytest
-coverage report --fail-under=100
+curl -i -X POST http://localhost:8000/payments \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: order-card-001' \
+  -d '{"tariff_id":2,"email":"student@example.com","method":"card"}'
 ```
 
-GitHub Actions runs these checks on every push and pull request. The workflow
-sets `WEBHOOK_SECRET` to a test value for the webhook tests.
+Повторите тот же запрос с тем же `Idempotency-Key`: вернётся тот же платёж с HTTP 200, новый не создастся.
 
-## Project structure
+Получить платёж по его ID (подставьте `id` из ответа создания):
 
-```text
-app/      — FastAPI application
-alembic/  — Alembic migrations
-tests/    — pytest test suite
+```bash
+curl http://localhost:8000/payments/1
+```
+
+Создать платёж через СБП:
+
+```bash
+curl -i -X POST http://localhost:8000/payments \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: order-sbp-001' \
+  -d '{"tariff_id":1,"email":"student@example.com","method":"sbp"}'
+```
+
+Создать платёж в рассрочку на 3 месяца со скидкой:
+
+```bash
+curl -i -X POST http://localhost:8000/payments \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: order-installment-001' \
+  -d '{"tariff_id":2,"email":"student@example.com","method":"installment","installment_months":3,"promo_code":"KVITTO10"}'
+```
+
+Проверить ошибку неизвестного промокода (ожидается HTTP 422):
+
+```bash
+curl -i -X POST http://localhost:8000/payments \
+  -H 'Content-Type: application/json' \
+  -d '{"tariff_id":2,"email":"student@example.com","method":"card","promo_code":"UNKNOWN"}'
 ```

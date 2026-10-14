@@ -5,7 +5,7 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: sqlite:////data/kvitto.db
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?Set WEBHOOK_SECRET in the environment before starting Compose}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-local-development-secret}
     volumes:
       - kvitto_data:/data
 
