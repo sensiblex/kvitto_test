@@ -46,3 +46,12 @@
 - `build_payment_schedule(amount, method, installment_months)`: returns the schedule for `installment` (requiring `installment_months`), `None` for `card`/`sbp` (rejecting `installment_months`) — keeps method-consistency rules in one place.
 - `can_transition_status` / `validate_status_transition`: single source of truth for `pending -> succeeded`, `pending -> failed`, `succeeded -> refunded`; everything else raises `InvalidStatusTransitionError`, which the webhook layer will map to 409 `{"error": "invalid_transition"}` without mutating the payment.
 - Domain exceptions (`InvalidPromoCodeError`, `InvalidInstallmentError`, `InvalidStatusTransitionError`) all inherit from `ValueError` via `PaymentLogicError` — usable in Pydantic validators (→ 422) and in routes (→ mapped to 404/409).
+
+## Stage 6 — Business logic tests
+
+- Added `tests/test_business_logic.py` with pure pytest tests importing only `app.services.payments`; no FastAPI or database is involved.
+- Covered payment amount without a promo code, the 10% `KVITTO10` discount, case-insensitive matching, and unknown promo codes.
+- Verified installment schedules for 3, 6, and 12 months, including the exact 1,990,000-kopeck schedules and `sum(schedule) == amount` across tariff prices and uneven amounts.
+- Verified remainder distribution to the first installments, invalid installment periods and negative amounts, and schedule/method consistency.
+- Tested valid and invalid status transitions through the pure status-validation functions.
+- Ran the full test suite: `pytest -v` — 42 tests passed.
