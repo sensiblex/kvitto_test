@@ -35,3 +35,14 @@
 - Registered the router in `app/main.py` via `app.include_router(tariffs_router)`.
 - Updated the `isolated_database` fixture to also override `app.dependency_overrides[get_db]` — endpoint sessions now use the same in-memory test database as the lifespan seeding (monkeypatched `main.SessionLocal`). The override mirrors `get_db` (yields session, closes in `finally`).
 - Added `test_get_tariffs_returns_all_tariffs_in_kopecks`: asserts HTTP 200, exactly 3 tariffs in seed order, kopeck prices as ints, and each item validates against `TariffResponse` with exactly the keys `{id, title, price}`.
+
+## Stage 5 — Payment business logic
+
+- Created `app/services/payments.py` with pure functions — no FastAPI/SQLAlchemy imports, so every rule is independently testable outside the HTTP layer.
+- Added `StrEnum`s `PaymentMethod` (`card`/`sbp`/`installment`) and `PaymentStatus` (`pending`/`succeeded`/`failed`/`refunded`) — StrEnum members compare equal to their string values, so they work with both raw strings from JSON/DB and enum values.
+- `calculate_discount(price, promo_code)`: `KVITTO10` matched case-insensitively via `strip().upper()`; discount is `(price * 10) // 100` — integer kopeck math, no floats. Unknown codes raise `InvalidPromoCodeError` (a `ValueError`, so it produces standard 422 when used inside Pydantic validators).
+- `calculate_payment_amount(price, promo_code)` returns `(amount, discount)` — the endpoint can persist both fields required by the payment response schema.
+- `calculate_installment_schedule(amount, months)`: validates months ∈ {3, 6, 12}; `base = amount // months`, `remainder = amount % months`; first `remainder` entries get `base + 1` — guarantees `sum(schedule) == amount` exactly (e.g. `1 990 000 / 3` → `[663334, 663333, 663333]`).
+- `build_payment_schedule(amount, method, installment_months)`: returns the schedule for `installment` (requiring `installment_months`), `None` for `card`/`sbp` (rejecting `installment_months`) — keeps method-consistency rules in one place.
+- `can_transition_status` / `validate_status_transition`: single source of truth for `pending -> succeeded`, `pending -> failed`, `succeeded -> refunded`; everything else raises `InvalidStatusTransitionError`, which the webhook layer will map to 409 `{"error": "invalid_transition"}` without mutating the payment.
+- Domain exceptions (`InvalidPromoCodeError`, `InvalidInstallmentError`, `InvalidStatusTransitionError`) all inherit from `ValueError` via `PaymentLogicError` — usable in Pydantic validators (→ 422) and in routes (→ mapped to 404/409).
