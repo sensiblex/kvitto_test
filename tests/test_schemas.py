@@ -138,6 +138,25 @@ def test_payment_response_validates_orm_attributes_and_parses_schedule():
     }
 
 
+def test_payment_response_marks_sqlite_naive_created_at_as_utc():
+    payment = SimpleNamespace(
+        id=42,
+        status="pending",
+        tariff_id=2,
+        amount=1_990_000,
+        discount=0,
+        method="card",
+        installment_months=None,
+        schedule=None,
+        email="student@example.com",
+        created_at=datetime(2026, 10, 14),
+    )
+
+    response = PaymentResponse.model_validate(payment)
+
+    assert response.model_dump(mode="json")["created_at"] == "2026-10-14T00:00:00Z"
+
+
 def test_payment_response_preserves_null_schedule():
     payment = SimpleNamespace(
         id=42,

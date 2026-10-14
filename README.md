@@ -117,6 +117,8 @@ curl -X POST http://localhost:8000/webhooks/bank \
 
 - `GET /tariffs` — list available tariffs.
 - `POST /payments` — create a payment (supports the `Idempotency-Key` header).
+  An empty key or invalid email returns 422; omit the header to create payments
+  without a key. Payment `created_at` is returned with a UTC timezone indicator.
 - `GET /payments` — list payments, ordered by `id` ascending. Optional query
   filters `email` and `status` combine with AND; without filters all payments
   are returned. `status` accepts `pending`, `succeeded`, `failed`, `refunded`

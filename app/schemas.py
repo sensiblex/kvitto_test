@@ -1,7 +1,8 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
+from email_validator import validate_email
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from app.services.payments import PaymentMethod, PaymentStatus, validate_promo_code
@@ -21,6 +22,12 @@ class PaymentCreate(BaseModel):
     method: PaymentMethod
     installment_months: Literal[3, 6, 12] | None = None
     promo_code: str | None = None
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, value: str) -> str:
+        validate_email(value, check_deliverability=False)
+        return value
 
     @field_validator("promo_code")
     @classmethod
@@ -55,6 +62,13 @@ class PaymentResponse(BaseModel):
     schedule: list[int] | None
     email: str
     created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def ensure_utc_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
     @field_validator("schedule", mode="before")
     @classmethod

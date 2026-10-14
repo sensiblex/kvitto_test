@@ -48,7 +48,9 @@ def get_webhook_secret() -> str:
 def post_payment(
     payment_data: PaymentCreate,
     response: Response,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", min_length=1
+    ),
     db: Session = Depends(get_db),
 ) -> PaymentResponse:
     try:

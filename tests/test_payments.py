@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -127,7 +128,8 @@ def test_create_payment_returns_and_persists_payment(client, isolated_database, 
     assert payment_data["installment_months"] is None
     assert payment_data["schedule"] is None
     assert payment_data["email"] == "student@example.com"
-    assert payment_data["created_at"]
+    created_at = datetime.fromisoformat(payment_data["created_at"])
+    assert created_at.utcoffset() == timezone.utc.utcoffset(None)
 
     with isolated_database() as db:
         payment = db.get(Payment, payment_data["id"])
@@ -182,6 +184,32 @@ def test_repeated_idempotency_key_returns_existing_payment(client, isolated_data
         assert len(db.scalars(select(Payment)).all()) == 1
 
 
+def test_create_payment_preserves_valid_email(client):
+    tariff_id = get_standard_tariff_id(client)
+
+    response = client.post(
+        "/payments", json=payment_payload(tariff_id, email="Alice@EXAMPLE.COM")
+    )
+
+    assert response.status_code == 201
+    assert response.json()["email"] == "Alice@EXAMPLE.COM"
+
+
+def test_empty_idempotency_key_is_rejected_without_saving(client, isolated_database):
+    tariff_id = get_standard_tariff_id(client)
+    payload = payment_payload(tariff_id)
+
+    for _ in range(2):
+        response = client.post(
+            "/payments", json=payload, headers={"Idempotency-Key": ""}
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["header", "Idempotency-Key"]
+
+    with isolated_database() as db:
+        assert db.scalars(select(Payment)).all() == []
+
+
 def test_create_payment_applies_case_insensitive_promo_code(client):
     tariff_id = get_standard_tariff_id(client)
 
@@ -232,6 +260,7 @@ def test_create_installment_payment_has_exact_schedule(
         {"method": "installment"},
         {"method": "sbp", "installment_months": 3},
         {"promo_code": "UNKNOWN"},
+        {"email": "not-an-email"},
     ],
 )
 def test_create_payment_rejects_invalid_payload_without_saving(
