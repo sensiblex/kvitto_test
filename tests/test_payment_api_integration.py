@@ -1,3 +1,7 @@
+import hashlib
+import hmac
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -22,7 +26,6 @@ def isolated_database(monkeypatch):
         autoflush=False,
         bind=test_engine,
     )
-    monkeypatch.setattr(main, "engine", test_engine)
     monkeypatch.setattr(main, "SessionLocal", test_session_local)
 
     def override_get_db():
@@ -39,10 +42,30 @@ def isolated_database(monkeypatch):
     test_engine.dispose()
 
 
+WEBHOOK_SECRET = "test-webhook-secret"
+
+
 @pytest.fixture
-def client(isolated_database):
+def client(isolated_database, monkeypatch):
+    monkeypatch.setenv("WEBHOOK_SECRET", WEBHOOK_SECRET)
     with TestClient(main.app) as test_client:
         yield test_client
+
+
+def sign_body(body: bytes) -> str:
+    return hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+
+
+def post_signed_webhook(client, payload):
+    body = json.dumps(payload).encode()
+    return client.post(
+        "/webhooks/bank",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Signature": sign_body(body),
+        },
+    )
 
 
 def get_standard_tariff_id(client):
@@ -144,9 +167,8 @@ def test_invalid_transition_returns_409_without_changing_status(client):
     create_response = client.post("/payments", json=payment_payload(tariff_id))
     payment_id = create_response.json()["id"]
 
-    webhook_response = client.post(
-        "/webhooks/bank",
-        json={"payment_id": payment_id, "status": "refunded"},
+    webhook_response = post_signed_webhook(
+        client, {"payment_id": payment_id, "status": "refunded"}
     )
     payment_response = client.get(f"/payments/{payment_id}")
 
@@ -161,3 +183,10 @@ def test_get_unknown_payment_returns_404(client):
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Payment not found"}
+
+
+def test_root_returns_health_status(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}

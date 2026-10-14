@@ -1,14 +1,21 @@
+import hashlib
+import hmac
 import json
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import main
 from app.database import Base, get_db
 from app.models import Payment
+from app.schemas import PaymentCreate
+from app.services.payment_creation import create_payment as create_payment_record
 
 
 @pytest.fixture
@@ -24,7 +31,6 @@ def isolated_database(monkeypatch):
         autoflush=False,
         bind=test_engine,
     )
-    monkeypatch.setattr(main, "engine", test_engine)
     monkeypatch.setattr(main, "SessionLocal", test_session_local)
 
     def override_get_db():
@@ -41,10 +47,30 @@ def isolated_database(monkeypatch):
     test_engine.dispose()
 
 
+WEBHOOK_SECRET = "test-webhook-secret"
+
+
 @pytest.fixture
-def client(isolated_database):
+def client(isolated_database, monkeypatch):
+    monkeypatch.setenv("WEBHOOK_SECRET", WEBHOOK_SECRET)
     with TestClient(main.app) as test_client:
         yield test_client
+
+
+def sign_body(body: bytes) -> str:
+    return hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+
+
+def post_signed_webhook(client, payload):
+    body = json.dumps(payload).encode()
+    return client.post(
+        "/webhooks/bank",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Signature": sign_body(body),
+        },
+    )
 
 
 def get_standard_tariff_id(client):
@@ -71,9 +97,7 @@ def create_payment(client):
 
 
 @pytest.mark.parametrize("method", ["card", "sbp"])
-def test_create_payment_returns_and_persists_payment(
-    client, isolated_database, method
-):
+def test_create_payment_returns_and_persists_payment(client, isolated_database, method):
     tariff_id = get_standard_tariff_id(client)
 
     response = client.post(
@@ -142,9 +166,7 @@ def test_get_payment_returns_404_for_unknown_id(client):
     assert response.json() == {"detail": "Payment not found"}
 
 
-def test_repeated_idempotency_key_returns_existing_payment(
-    client, isolated_database
-):
+def test_repeated_idempotency_key_returns_existing_payment(client, isolated_database):
     tariff_id = get_standard_tariff_id(client)
     payload = payment_payload(tariff_id)
     headers = {"Idempotency-Key": "abc"}
@@ -250,9 +272,8 @@ def test_bank_webhook_applies_valid_status_transitions(
     payment_id = create_payment(client)
 
     for new_status in status_updates:
-        response = client.post(
-            "/webhooks/bank",
-            json={"payment_id": payment_id, "status": new_status},
+        response = post_signed_webhook(
+            client, {"payment_id": payment_id, "status": new_status}
         )
 
         assert response.status_code == 200
@@ -293,15 +314,13 @@ def test_bank_webhook_rejects_invalid_transition_without_changing_status(
         "refunded": ["succeeded", "refunded"],
     }
     for new_status in status_updates[initial_status]:
-        response = client.post(
-            "/webhooks/bank",
-            json={"payment_id": payment_id, "status": new_status},
+        response = post_signed_webhook(
+            client, {"payment_id": payment_id, "status": new_status}
         )
         assert response.status_code == 200
 
-    response = client.post(
-        "/webhooks/bank",
-        json={"payment_id": payment_id, "status": requested_status},
+    response = post_signed_webhook(
+        client, {"payment_id": payment_id, "status": requested_status}
     )
 
     assert response.status_code == 409
@@ -313,10 +332,167 @@ def test_bank_webhook_rejects_invalid_transition_without_changing_status(
 
 
 def test_bank_webhook_returns_404_for_unknown_payment(client):
-    response = client.post(
-        "/webhooks/bank",
-        json={"payment_id": 999_999, "status": "succeeded"},
+    response = post_signed_webhook(
+        client, {"payment_id": 999_999, "status": "succeeded"}
     )
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Payment not found"}
+
+
+def create_payment_with_email(client, email):
+    tariff_id = get_standard_tariff_id(client)
+    response = client.post(
+        "/payments",
+        json=payment_payload(tariff_id, email=email),
+    )
+
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_list_payments_returns_all_payments_ordered_by_id(client):
+    first = create_payment_with_email(client, "first@example.com")
+    second = create_payment_with_email(client, "second@example.com")
+
+    response = client.get("/payments")
+
+    assert response.status_code == 200
+    assert response.json() == [first, second]
+
+
+def test_list_payments_filters_by_email(client):
+    matching = create_payment_with_email(client, "alice@example.com")
+    create_payment_with_email(client, "bob@example.com")
+
+    response = client.get("/payments", params={"email": "alice@example.com"})
+
+    assert response.status_code == 200
+    assert response.json() == [matching]
+
+
+def test_list_payments_email_filter_matches_exact_case(client):
+    create_payment_with_email(client, "alice@example.com")
+
+    response = client.get("/payments", params={"email": "ALICE@example.com"})
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_payments_filters_by_status(client):
+    pending_payment = create_payment_with_email(client, "pending@example.com")
+    succeeded_payment = create_payment_with_email(client, "succeeded@example.com")
+    webhook_response = post_signed_webhook(
+        client, {"payment_id": succeeded_payment["id"], "status": "succeeded"}
+    )
+    assert webhook_response.status_code == 200
+
+    response = client.get("/payments", params={"status": "succeeded"})
+
+    assert response.status_code == 200
+    succeeded_payment["status"] = "succeeded"
+    assert response.json() == [succeeded_payment]
+
+    response = client.get("/payments", params={"status": "pending"})
+
+    assert response.status_code == 200
+    assert response.json() == [pending_payment]
+
+
+def test_list_payments_combines_email_and_status_filters(client):
+    matching = create_payment_with_email(client, "alice@example.com")
+    create_payment_with_email(client, "alice@example.com")
+    other_email = create_payment_with_email(client, "bob@example.com")
+    for payment in (matching, other_email):
+        webhook_response = post_signed_webhook(
+            client, {"payment_id": payment["id"], "status": "succeeded"}
+        )
+        assert webhook_response.status_code == 200
+
+    response = client.get(
+        "/payments",
+        params={"email": "alice@example.com", "status": "succeeded"},
+    )
+
+    assert response.status_code == 200
+    matching["status"] = "succeeded"
+    assert response.json() == [matching]
+
+
+def test_list_payments_returns_empty_list_when_nothing_matches(client):
+    create_payment_with_email(client, "alice@example.com")
+
+    response = client.get("/payments", params={"email": "nobody@example.com"})
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_payments_rejects_invalid_status_filter(client):
+    response = client.get("/payments", params={"status": "unknown"})
+
+    assert response.status_code == 422
+
+
+def test_create_payment_returns_existing_after_idempotency_unique_conflict():
+    tariff = SimpleNamespace(id=2, price=1_990_000)
+    existing_payment = SimpleNamespace(id=42)
+    db = Mock()
+    db.scalar.side_effect = [None, tariff, existing_payment]
+    db.commit.side_effect = IntegrityError("insert", {}, Exception("duplicate key"))
+    payment_data = PaymentCreate(
+        tariff_id=2,
+        email="student@example.com",
+        method="card",
+    )
+
+    payment, created = create_payment_record(db, payment_data, "duplicate-key")
+
+    assert payment is existing_payment
+    assert created is False
+    db.rollback.assert_called_once_with()
+    assert db.scalar.call_count == 3
+    db.refresh.assert_not_called()
+
+
+def test_create_payment_reraises_unrelated_integrity_error_after_rollback():
+    tariff = SimpleNamespace(id=2, price=1_990_000)
+    db = Mock()
+    db.scalar.side_effect = [None, tariff, None]
+    error = IntegrityError("insert", {}, Exception("unrelated constraint"))
+    db.commit.side_effect = error
+    payment_data = PaymentCreate(
+        tariff_id=2,
+        email="student@example.com",
+        method="card",
+    )
+
+    with pytest.raises(IntegrityError) as raised:
+        create_payment_record(db, payment_data, "some-key")
+
+    assert raised.value is error
+    db.rollback.assert_called_once_with()
+    assert db.scalar.call_count == 3
+    db.refresh.assert_not_called()
+
+
+def test_create_payment_reraises_integrity_error_without_idempotency_key():
+    tariff = SimpleNamespace(id=2, price=1_990_000)
+    db = Mock()
+    db.scalar.return_value = tariff
+    error = IntegrityError("insert", {}, Exception("unrelated constraint"))
+    db.commit.side_effect = error
+    payment_data = PaymentCreate(
+        tariff_id=2,
+        email="student@example.com",
+        method="card",
+    )
+
+    with pytest.raises(IntegrityError) as raised:
+        create_payment_record(db, payment_data)
+
+    assert raised.value is error
+    db.rollback.assert_called_once_with()
+    assert db.scalar.call_count == 1
+    db.refresh.assert_not_called()

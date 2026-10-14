@@ -1,17 +1,43 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+import os
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Payment
 from app.schemas import BankWebhook, PaymentCreate, PaymentResponse
 from app.services.payment_creation import TariffNotFoundError, create_payment
+from app.services.payment_listing import list_payments
 from app.services.payments import (
     InvalidStatusTransitionError,
+    PaymentStatus,
     validate_status_transition,
 )
+from app.services.webhook_signature import verify_signature
 
 router = APIRouter(tags=["payments"])
+
+
+def get_webhook_secret() -> str:
+    secret = os.environ.get("WEBHOOK_SECRET")
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="WEBHOOK_SECRET is not configured",
+        )
+    return secret
 
 
 @router.post(
@@ -37,6 +63,15 @@ def post_payment(
         ) from exc
 
 
+@router.get("/payments", response_model=list[PaymentResponse])
+def get_payment_list(
+    email: str | None = None,
+    payment_status: PaymentStatus | None = Query(default=None, alias="status"),
+    db: Session = Depends(get_db),
+) -> list[PaymentResponse]:
+    return list_payments(db, email=email, status=payment_status)
+
+
 @router.get("/payments/{payment_id}", response_model=PaymentResponse)
 def get_payment(payment_id: int, db: Session = Depends(get_db)) -> PaymentResponse:
     payment = db.get(Payment, payment_id)
@@ -49,7 +84,24 @@ def get_payment(payment_id: int, db: Session = Depends(get_db)) -> PaymentRespon
 
 
 @router.post("/webhooks/bank")
-def bank_webhook(webhook: BankWebhook, db: Session = Depends(get_db)) -> JSONResponse:
+async def bank_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+    webhook_secret: str = Depends(get_webhook_secret),
+) -> JSONResponse:
+    body = await request.body()
+    signature = request.headers.get("X-Signature")
+    if not verify_signature(body, signature, webhook_secret):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid webhook signature",
+        )
+
+    try:
+        webhook = BankWebhook.model_validate_json(body)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
+
     payment = db.get(Payment, webhook.payment_id)
     if payment is None:
         raise HTTPException(
