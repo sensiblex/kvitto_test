@@ -64,3 +64,12 @@
 - `PaymentResponse` enables ORM attribute validation and parses the stored JSON schedule text into the API's `list[int] | None` contract. `BankWebhook` restricts status values to the supported payment statuses; transition validity remains business logic.
 - Added schema tests for accepted/rejected method-period combinations, promo validation, webhook statuses, ORM response serialization, and nullable schedules. Added unit coverage for the shared promo validator.
 - Ran `pytest -q` — 75 tests passed.
+
+## Stage 8 — Payment creation API
+
+- Added `POST /payments` with `PaymentCreate` request validation and `PaymentResponse` output, returning HTTP 201 for a newly created payment.
+- The creation service looks up the tariff, reuses the integer-based amount/discount and installment schedule helpers, persists `pending` Payment records, and stores schedules as JSON text for response-schema parsing.
+- Unknown tariffs return HTTP 404; malformed request data and unknown promo codes retain FastAPI/Pydantic's standard HTTP 422 response.
+- Added isolated SQLite integration tests for stored/returned payment fields, promo discount, exact 3/6/12-month schedules, invalid input, and missing tariffs.
+- Idempotency-Key handling is deferred to a later stage as explicitly scoped by the user.
+- Ran `pytest -q` — 86 tests passed.
