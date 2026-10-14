@@ -30,3 +30,14 @@ def post_payment(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tariff not found",
         ) from exc
+
+
+@router.get("/payments/{payment_id}", response_model=PaymentResponse)
+def get_payment(payment_id: int, db: Session = Depends(get_db)) -> PaymentResponse:
+    payment = db.get(Payment, payment_id)
+    if payment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment not found",
+        )
+    return payment

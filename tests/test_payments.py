@@ -106,6 +106,34 @@ def test_create_payment_returns_and_persists_payment(
         assert payment.schedule is None
 
 
+def test_get_payment_returns_all_payment_fields(client):
+    tariff_id = get_standard_tariff_id(client)
+    created_response = client.post(
+        "/payments",
+        json=payment_payload(
+            tariff_id,
+            method="installment",
+            installment_months=3,
+            promo_code="kvitto10",
+        ),
+    )
+
+    assert created_response.status_code == 201
+
+    created_payment = created_response.json()
+    response = client.get(f"/payments/{created_payment['id']}")
+
+    assert response.status_code == 200
+    assert response.json() == created_payment
+
+
+def test_get_payment_returns_404_for_unknown_id(client):
+    response = client.get("/payments/999999")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Payment not found"}
+
+
 def test_repeated_idempotency_key_returns_existing_payment(
     client, isolated_database
 ):
