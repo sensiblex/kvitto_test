@@ -73,3 +73,36 @@
 - Added isolated SQLite integration tests for stored/returned payment fields, promo discount, exact 3/6/12-month schedules, invalid input, and missing tariffs.
 - Idempotency-Key handling is deferred to a later stage as explicitly scoped by the user.
 - Ran `pytest -q` — 86 tests passed.
+
+## Bonus — GET /payments list endpoint with filters
+
+- Added `GET /payments` returning `list[PaymentResponse]` ordered by `id` ascending for deterministic output.
+- Optional query filters `email` and `status` combine with AND; no filters return all payments. No pagination added per scope.
+- `status` is typed as `PaymentStatus`, so invalid values get FastAPI's standard 422 for free.
+- Email filtering is an exact, case-sensitive match: `create_payment` persists `payment_data.email` without normalization, so comparing the stored value literally is the simplest consistent choice. Documented in README.
+- Query construction lives in `app/services/payment_listing.py` (`list_payments` builds a `select` with conditional `where` clauses) — the route stays thin.
+- The query parameter is named `payment_status` with `Query(alias="status")` because the router module already imports `status` from FastAPI.
+- Route ordering is safe: `GET /payments` is declared before `GET /payments/{payment_id}`, and the paths are disjoint anyway (`/payments` has no second segment to bind to `payment_id`).
+- Tests cover: unfiltered list ordered by id, email filter, case-sensitivity of the email filter, status filter, combined filters, empty result (`[]`), and invalid status (422) — asserting response bodies, not just status codes.
+
+## Bonus — Bank webhook HMAC-SHA256 signature
+
+- `POST /webhooks/bank` now requires an `X-Signature` header: hex HMAC-SHA256 of the raw request body, keyed with `WEBHOOK_SECRET`. Missing or invalid signature returns 401 before JSON parsing or any DB access, so an unsigned request can never mutate state.
+- Verification lives in `app/services/webhook_signature.py` as a pure function `verify_signature(body, signature, secret)` using `hmac.compare_digest` for constant-time comparison — independently testable, no FastAPI imports.
+- The secret is read through the `get_webhook_secret` dependency from `os.environ["WEBHOOK_SECRET"]`; if unset the endpoint returns 500 rather than accepting unchecked requests. No secret is hardcoded.
+- The handler reads the raw body via `await request.body()` (so the signature is checked against the exact bytes sent) and then parses `BankWebhook.model_validate_json`, re-raising pydantic `ValidationError` as `RequestValidationError` to keep FastAPI's standard 422 format.
+- Other behavior is unchanged: 404 for unknown payments, 409 `{"error": "invalid_transition"}` without state change, 200 `{"result": "ok"}` on success.
+- Tests: unit coverage for correct/wrong/missing signature, tampered body, and wrong secret; integration coverage for 401 (status unchanged), valid signature, 404/409/422 with a valid signature, and 500 when the secret is missing. Existing webhook tests now sign requests through a shared helper with `WEBHOOK_SECRET` set via `monkeypatch.setenv`.
+- Docker Compose requires an explicitly set `WEBHOOK_SECRET` and does not use a public fallback; README documents the variable and shows Python/curl signing examples.
+
+## Bonus — Alembic migrations
+
+- Added `alembic==1.20.0` to `requirements.txt` (released 2026-09-11, >7 days old). Initialized `alembic/` via `alembic init alembic`.
+- `app/database.py` gained `get_database_url()` so the `DATABASE_URL` lookup happens at call time; `SQLALCHEMY_DATABASE_URL` keeps its value for the engine.
+- `alembic/env.py` uses `Base.metadata` from `app.models`, calls `config.set_main_option("sqlalchemy.url", get_database_url())` so migrations target the same database the app uses (and tests can redirect via `DATABASE_URL`), and sets `render_as_batch=True` in both offline and online modes for SQLite ALTER support.
+- Generated the initial migration `f5f41a6db951` with `alembic revision --autogenerate` against an empty temporary database; verified manually that it creates `tariffs` (unique `title`) and `payments` (FK to tariffs, unique `uq_payment_idempotency_key` on `idempotency_key`) matching `app/models.py`.
+- Removed `Base.metadata.create_all` from the app lifespan in `app/main.py` — the working application's schema is owned by Alembic (`alembic upgrade head`). Tariff seeding is unchanged and still idempotent. Test fixtures keep `create_all` on their own temporary engines, so tests stay independent of migrations. Dropped the now-unneeded `monkeypatch.setattr(main, "engine", ...)` lines from the four fixtures.
+- Dockerfile `CMD` now runs `alembic upgrade head` before uvicorn, so `docker compose up` migrates then serves.
+- Added `tests/test_migrations.py`: `command.upgrade` on a temp SQLite file (via `DATABASE_URL`) asserts `tariffs`, `payments`, and `alembic_version` exist, the `uq_payment_idempotency_key` unique constraint is present, and a repeated `upgrade head` is a no-op.
+- Deleted the stale `kvitto.db` dev database (created pre-migrations, no `alembic_version`) so the documented local flow works; `alembic upgrade head` recreates the schema.
+- Verified: `alembic upgrade head` + `alembic current` on a fresh DB; `pytest -q` — 138 tests pass; `docker compose up --build` runs the migration then serves `GET /` and `GET /tariffs` with seeded data.
