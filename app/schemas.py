@@ -30,10 +30,7 @@ class PaymentCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_installment_months(self) -> "PaymentCreate":
-        if (
-            self.method == PaymentMethod.INSTALLMENT
-            and self.installment_months is None
-        ):
+        if self.method == PaymentMethod.INSTALLMENT and self.installment_months is None:
             raise ValueError("installment_months is required for installment payments")
         if (
             self.method != PaymentMethod.INSTALLMENT

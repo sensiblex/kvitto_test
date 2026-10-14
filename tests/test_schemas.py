@@ -80,9 +80,7 @@ def test_payment_create_rejects_unknown_method():
         )
 
 
-@pytest.mark.parametrize(
-    "promo_code", ["KVITTO10", "kvitto10", "Kvitto10", "KvItTo10"]
-)
+@pytest.mark.parametrize("promo_code", ["KVITTO10", "kvitto10", "Kvitto10", "KvItTo10"])
 def test_payment_create_accepts_case_insensitive_promo_code(promo_code):
     payment = PaymentCreate.model_validate(
         {
