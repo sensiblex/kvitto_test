@@ -5,11 +5,10 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database import Base, SessionLocal, engine
-from app.models import Payment, Tariff  # noqa: F401 — register models with Base
+from app.database import SessionLocal
+from app.models import Tariff
 from app.routers.payments import router as payments_router
 from app.routers.tariffs import router as tariffs_router
-
 
 REQUIRED_TARIFFS = (
     ("basic", 990_000),
@@ -32,7 +31,9 @@ def seed_tariffs(db: Session) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    Base.metadata.create_all(bind=engine)
+    # The schema is managed by Alembic — run `alembic upgrade head` before
+    # starting the app. Tests create the schema on their own temporary
+    # database, so they do not depend on migrations.
     with SessionLocal() as db:
         seed_tariffs(db)
     yield

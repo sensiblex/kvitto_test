@@ -23,7 +23,6 @@ def isolated_database(monkeypatch):
         autoflush=False,
         bind=test_engine,
     )
-    monkeypatch.setattr(main, "engine", test_engine)
     monkeypatch.setattr(main, "SessionLocal", test_session_local)
 
     def override_get_db():
