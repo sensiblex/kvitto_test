@@ -1,10 +1,12 @@
 import hashlib
 import hmac
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -50,6 +52,35 @@ def client(isolated_database, monkeypatch):
     monkeypatch.setenv("WEBHOOK_SECRET", WEBHOOK_SECRET)
     with TestClient(main.app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def file_database_client(monkeypatch, tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'concurrent-payments.db'}",
+        connect_args={"check_same_thread": False, "timeout": 15},
+    )
+    Base.metadata.create_all(bind=engine)
+    test_session_local = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=engine,
+    )
+    monkeypatch.setattr(main, "SessionLocal", test_session_local)
+
+    def override_get_db():
+        db = test_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    main.app.dependency_overrides[get_db] = override_get_db
+    monkeypatch.setenv("WEBHOOK_SECRET", WEBHOOK_SECRET)
+    with TestClient(main.app) as test_client:
+        yield test_client, test_session_local
+    main.app.dependency_overrides.clear()
+    engine.dispose()
 
 
 def sign_body(body: bytes) -> str:
@@ -160,6 +191,42 @@ def test_repeated_idempotency_key_returns_one_payment(client, isolated_database)
         payments = db.scalars(select(Payment)).all()
         assert len(payments) == 1
         assert payments[0].id == first_response.json()["id"]
+
+
+def test_concurrent_idempotency_requests_create_one_payment(file_database_client):
+    client, test_session_local = file_database_client
+    tariff_id = get_standard_tariff_id(client)
+    payload = payment_payload(tariff_id)
+    headers = {"Idempotency-Key": "concurrent-integration-test-key"}
+    commit_barrier = Barrier(2)
+    connection_ids = set()
+
+    def synchronize_payment_commits(session):
+        if any(isinstance(item, Payment) for item in session.new):
+            connection = session.connection().connection.driver_connection
+            connection_ids.add(id(connection))
+            commit_barrier.wait(timeout=10)
+
+    event.listen(test_session_local, "before_commit", synchronize_payment_commits)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(
+                executor.map(
+                    lambda _: client.post("/payments", json=payload, headers=headers),
+                    range(2),
+                )
+            )
+    finally:
+        event.remove(test_session_local, "before_commit", synchronize_payment_commits)
+
+    assert sorted(response.status_code for response in responses) == [200, 201]
+    assert responses[0].json()["id"] == responses[1].json()["id"]
+    assert len(connection_ids) == 2
+
+    with test_session_local() as db:
+        payments = db.scalars(select(Payment)).all()
+        assert len(payments) == 1
+        assert payments[0].id == responses[0].json()["id"]
 
 
 def test_invalid_transition_returns_409_without_changing_status(client):
