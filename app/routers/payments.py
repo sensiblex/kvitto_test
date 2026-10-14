@@ -5,6 +5,7 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
+    Path,
     Query,
     Request,
     Response,
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Payment
-from app.schemas import BankWebhook, PaymentCreate, PaymentResponse
+from app.schemas import MAX_ID, BankWebhook, PaymentCreate, PaymentResponse
 from app.services.payment_creation import TariffNotFoundError, create_payment
 from app.services.payment_listing import list_payments
 from app.services.payments import (
@@ -75,7 +76,9 @@ def get_payment_list(
 
 
 @router.get("/payments/{payment_id}", response_model=PaymentResponse)
-def get_payment(payment_id: int, db: Session = Depends(get_db)) -> PaymentResponse:
+def get_payment(
+    payment_id: int = Path(ge=1, le=MAX_ID), db: Session = Depends(get_db)
+) -> PaymentResponse:
     payment = db.get(Payment, payment_id)
     if payment is None:
         raise HTTPException(

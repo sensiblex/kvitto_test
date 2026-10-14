@@ -12,4 +12,4 @@ def verify_signature(body: bytes, signature: str | None, secret: str) -> bool:
     if signature is None:
         return False
     expected = compute_signature(body, secret)
-    return hmac.compare_digest(expected, signature)
+    return hmac.compare_digest(expected.encode(), signature.encode())

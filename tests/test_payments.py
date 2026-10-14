@@ -312,6 +312,49 @@ def test_create_payment_returns_404_for_unknown_tariff(client, isolated_database
         assert db.scalars(select(Payment)).all() == []
 
 
+@pytest.mark.parametrize("tariff_id", [10**30, 2**31, 0, -1])
+def test_create_payment_rejects_out_of_range_tariff_id(
+    client, isolated_database, tariff_id
+):
+    response = client.post("/payments", json=payment_payload(tariff_id))
+
+    assert response.status_code == 422
+    assert "detail" in response.json()
+    with isolated_database() as db:
+        assert db.scalars(select(Payment)).all() == []
+
+
+@pytest.mark.parametrize("payment_id", ["99999999999999999999", "0", "-1"])
+def test_get_payment_rejects_out_of_range_id(client, payment_id):
+    response = client.get(f"/payments/{payment_id}")
+
+    assert response.status_code == 422
+    assert "detail" in response.json()
+
+
+def test_get_payment_returns_404_for_valid_missing_id(client):
+    response = client.get("/payments/999999")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Payment not found"}
+
+
+@pytest.mark.parametrize("payment_id", [10**30, 2**31, 0, -1])
+def test_bank_webhook_rejects_out_of_range_payment_id(
+    client, isolated_database, payment_id
+):
+    created_id = create_payment(client)
+
+    response = post_signed_webhook(
+        client, {"payment_id": payment_id, "status": "succeeded"}
+    )
+
+    assert response.status_code == 422
+    assert "detail" in response.json()
+    with isolated_database() as db:
+        assert db.get(Payment, created_id).status == "pending"
+
+
 @pytest.mark.parametrize(
     ("status_updates", "expected_status"),
     [

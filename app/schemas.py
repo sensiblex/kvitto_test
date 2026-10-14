@@ -1,16 +1,22 @@
 import json
 from datetime import datetime, timezone
+from typing import Annotated
 
 from email_validator import validate_email
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     StrictInt,
     field_validator,
     model_validator,
 )
 
 from app.services.payments import PaymentMethod, PaymentStatus, validate_promo_code
+
+MAX_ID = 2**31 - 1
+
+EntityId = Annotated[StrictInt, Field(ge=1, le=MAX_ID)]
 
 
 class TariffResponse(BaseModel):
@@ -22,7 +28,7 @@ class TariffResponse(BaseModel):
 
 
 class PaymentCreate(BaseModel):
-    tariff_id: StrictInt
+    tariff_id: EntityId
     email: str
     method: PaymentMethod
     installment_months: StrictInt | None = None
@@ -91,5 +97,5 @@ class PaymentResponse(BaseModel):
 
 
 class BankWebhook(BaseModel):
-    payment_id: StrictInt
+    payment_id: EntityId
     status: PaymentStatus

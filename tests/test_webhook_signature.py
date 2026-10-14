@@ -99,6 +99,33 @@ def test_verify_signature_rejects_wrong_signature():
     assert not verify_signature(body, "0" * 64, WEBHOOK_SECRET)
 
 
+def test_verify_signature_rejects_non_ascii_signature():
+    body = webhook_body({"payment_id": 1, "status": "succeeded"})
+
+    assert verify_signature(body, "подпись", WEBHOOK_SECRET) is False
+
+
+def test_webhook_rejects_non_ascii_signature_without_changing_status(
+    client, isolated_database
+):
+    payment_id = create_payment(client)
+    body = webhook_body({"payment_id": payment_id, "status": "succeeded"})
+
+    response = client.post(
+        "/webhooks/bank",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Signature": "é".encode("latin-1"),
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid webhook signature"}
+    with isolated_database() as db:
+        assert db.get(Payment, payment_id).status == "pending"
+
+
 def test_verify_signature_rejects_missing_signature():
     body = webhook_body({"payment_id": 1, "status": "succeeded"})
 
