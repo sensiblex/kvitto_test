@@ -62,6 +62,14 @@ def payment_payload(tariff_id, **overrides):
     return payload
 
 
+def create_payment(client):
+    tariff_id = get_standard_tariff_id(client)
+    response = client.post("/payments", json=payment_payload(tariff_id))
+
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
 @pytest.mark.parametrize("method", ["card", "sbp"])
 def test_create_payment_returns_and_persists_payment(
     client, isolated_database, method
@@ -226,3 +234,89 @@ def test_create_payment_returns_404_for_unknown_tariff(client, isolated_database
     assert response.json() == {"detail": "Tariff not found"}
     with isolated_database() as db:
         assert db.scalars(select(Payment)).all() == []
+
+
+@pytest.mark.parametrize(
+    ("status_updates", "expected_status"),
+    [
+        (["succeeded"], "succeeded"),
+        (["failed"], "failed"),
+        (["succeeded", "refunded"], "refunded"),
+    ],
+)
+def test_bank_webhook_applies_valid_status_transitions(
+    client, isolated_database, status_updates, expected_status
+):
+    payment_id = create_payment(client)
+
+    for new_status in status_updates:
+        response = client.post(
+            "/webhooks/bank",
+            json={"payment_id": payment_id, "status": new_status},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"result": "ok"}
+
+    with isolated_database() as db:
+        payment = db.get(Payment, payment_id)
+        assert payment is not None
+        assert payment.status == expected_status
+
+
+@pytest.mark.parametrize(
+    ("initial_status", "requested_status"),
+    [
+        ("pending", "pending"),
+        ("pending", "refunded"),
+        ("succeeded", "pending"),
+        ("succeeded", "succeeded"),
+        ("succeeded", "failed"),
+        ("failed", "pending"),
+        ("failed", "succeeded"),
+        ("failed", "failed"),
+        ("failed", "refunded"),
+        ("refunded", "pending"),
+        ("refunded", "succeeded"),
+        ("refunded", "failed"),
+        ("refunded", "refunded"),
+    ],
+)
+def test_bank_webhook_rejects_invalid_transition_without_changing_status(
+    client, isolated_database, initial_status, requested_status
+):
+    payment_id = create_payment(client)
+    status_updates = {
+        "pending": [],
+        "succeeded": ["succeeded"],
+        "failed": ["failed"],
+        "refunded": ["succeeded", "refunded"],
+    }
+    for new_status in status_updates[initial_status]:
+        response = client.post(
+            "/webhooks/bank",
+            json={"payment_id": payment_id, "status": new_status},
+        )
+        assert response.status_code == 200
+
+    response = client.post(
+        "/webhooks/bank",
+        json={"payment_id": payment_id, "status": requested_status},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "invalid_transition"}
+    with isolated_database() as db:
+        payment = db.get(Payment, payment_id)
+        assert payment is not None
+        assert payment.status == initial_status
+
+
+def test_bank_webhook_returns_404_for_unknown_payment(client):
+    response = client.post(
+        "/webhooks/bank",
+        json={"payment_id": 999_999, "status": "succeeded"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Payment not found"}
