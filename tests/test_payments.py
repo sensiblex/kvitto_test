@@ -106,6 +106,24 @@ def test_create_payment_returns_and_persists_payment(
         assert payment.schedule is None
 
 
+def test_repeated_idempotency_key_returns_existing_payment(
+    client, isolated_database
+):
+    tariff_id = get_standard_tariff_id(client)
+    payload = payment_payload(tariff_id)
+    headers = {"Idempotency-Key": "abc"}
+
+    first_response = client.post("/payments", json=payload, headers=headers)
+    repeated_response = client.post("/payments", json=payload, headers=headers)
+
+    assert first_response.status_code == 201
+    assert repeated_response.status_code == 200
+    assert repeated_response.json()["id"] == first_response.json()["id"]
+
+    with isolated_database() as db:
+        assert len(db.scalars(select(Payment)).all()) == 1
+
+
 def test_create_payment_applies_case_insensitive_promo_code(client):
     tariff_id = get_standard_tariff_id(client)
 

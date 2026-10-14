@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -16,10 +16,15 @@ router = APIRouter(tags=["payments"])
 )
 def post_payment(
     payment_data: PaymentCreate,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ) -> PaymentResponse:
     try:
-        return create_payment(db, payment_data)
+        payment, created = create_payment(db, payment_data, idempotency_key)
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return payment
     except TariffNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
